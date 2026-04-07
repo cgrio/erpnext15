@@ -17,7 +17,7 @@ services:
       - container_net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$MYSQL_ROOT_PASSWORD || exit 1"]
+      test: ["CMD-SHELL", "mysqladmin ping -h db -uroot -p$MYSQL_ROOT_PASSWORD || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -158,7 +158,7 @@ services:
       - container_net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "sh", "-lc", "curl -f -I -H 'Host: ${FRAPPE_SITE_NAME}' http://127.0.0.1:8080/assets/frappe/images/frappe-framework-logo.svg"]
+      test: ["CMD", "sh", "-lc", "curl -f -I -H 'Host: ${FRAPPE_SITE_NAME}' http://frontend:8080/assets/frappe/images/frappe-framework-logo.svg"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -187,7 +187,7 @@ services:
       - container_net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "-I", "http://127.0.0.1:9000/socket.io/"]
+      test: ["CMD", "curl", "-f", "-I", "http://websocket:9000/socket.io/"]
       interval: 30s
       timeout: 10s
       retries: 3
