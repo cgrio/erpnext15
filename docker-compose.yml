@@ -1,0 +1,269 @@
+services:
+  db:
+    image: mariadb:10.6
+    container_name: erpnext-db
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+      - --skip-innodb-read-only-compressed
+      - --max-connections=500
+      - --max_allowed_packet=256M
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-ErpN3xt#2026}
+    volumes:
+      - db-data:/var/lib/mysql
+    networks:
+      - container_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis-cache:
+    image: redis:6.2-alpine
+    container_name: erpnext-redis-cache
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-cache-data:/data
+    networks:
+      - container_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-queue:
+    image: redis:6.2-alpine
+    container_name: erpnext-redis-queue
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-queue-data:/data
+    networks:
+      - container_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-socketio:
+    image: redis:6.2-alpine
+    container_name: erpnext-redis-socketio
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-socketio-data:/data
+    networks:
+      - container_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: erpnext-backend
+    image: erpnext-custom-woo:latest
+    environment:
+      # Database
+      - DB_HOST=db
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-ErpN3xt#2026}
+
+      # Redis
+      - REDIS_CACHE=redis-cache:6379
+      - REDIS_QUEUE=redis-queue:6379
+      - REDIS_SOCKETIO=redis-socketio:6379
+
+      # Frappe Site
+      - FRAPPE_SITE_NAME=${FRAPPE_SITE_NAME:-erpnext.local}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin@123}
+
+      # Proxy Headers (Cloudflare)
+      - UPGRADE_INSECURE_REQUESTS=1
+      - HTTP_HOST=${HTTP_HOST:-localhost}
+
+      # Performance
+      - WORKERS=4
+      - THREADS=4
+      - TIMEOUT=120
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+      redis-socketio:
+        condition: service_healthy
+    networks:
+      - container_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "curl -f -H 'Host: ${FRAPPE_SITE_NAME:-erpnext.local}' http://localhost:8000/api/method/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  frontend:
+    image: erpnext-custom-woo:latest
+    container_name: erpnext-frontend
+    entrypoint: ["nginx-entrypoint.sh"]
+    depends_on:
+      backend:
+        condition: service_healthy
+      websocket:
+        condition: service_started
+    environment:
+      # Backend Connection
+      - BACKEND=backend:8000
+      - FRAPPE_SITE_NAME_HEADER=${FRAPPE_SITE_NAME:-erpnext.local}
+      - SOCKETIO=websocket:9000
+
+      # Proxy Settings (Cloudflare)
+      - UPSTREAM_REAL_IP_ADDRESS=${UPSTREAM_REAL_IP_ADDRESS:-0.0.0.0/0}
+      - UPSTREAM_REAL_IP_HEADER=${UPSTREAM_REAL_IP_HEADER:-CF-Connecting-IP}
+      - UPSTREAM_REAL_IP_RECURSIVE=${UPSTREAM_REAL_IP_RECURSIVE:-on}
+
+      # Performance & Security
+      - PROXY_READ_TIMEOUT=120
+      - CLIENT_MAX_BODY_SIZE=50m
+      - ENABLE_GZIP=1
+      - ENABLE_CORS=1
+
+      # Site name for requests
+      - HTTP_HOST=${HTTP_HOST:-localhost}
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    ports:
+      - "${HTTP_PORT:-8090}:8080"
+    extra_hosts:
+      - "wordpress.co:host-gateway"
+      - "host.docker.internal:host-gateway"
+    networks:
+      - container_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "curl -f -I -H 'Host: ${FRAPPE_SITE_NAME:-erpnext.local}' http://localhost:8080/assets/frappe/images/frappe-framework-logo.svg"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  websocket:
+    image: erpnext-custom-woo:latest
+    container_name: erpnext-websocket
+    command: node /home/frappe/frappe-bench/apps/frappe/socketio.js
+    environment:
+      - FRAPPE_SITE_NAME=${FRAPPE_SITE_NAME:-erpnext.local}
+      - REDIS_CACHE=redis-cache:6379
+      - REDIS_QUEUE=redis-queue:6379
+      - REDIS_SOCKETIO=redis-socketio:6379
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    depends_on:
+      - backend
+      - redis-cache
+      - redis-socketio
+    extra_hosts:
+      - "wordpress.co:host-gateway"
+      - "host.docker.internal:host-gateway"
+    networks:
+      - container_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-I", "http://localhost:9000/socket.io/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  queue-short:
+    image: erpnext-custom-woo:latest
+    container_name: erpnext-queue-short
+    command: ["bench", "worker", "--queue", "short,default"]
+    environment:
+      - FRAPPE_SITE_NAME=${FRAPPE_SITE_NAME:-erpnext.local}
+      - REDIS_CACHE=redis-cache:6379
+      - REDIS_QUEUE=redis-queue:6379
+      - REDIS_SOCKETIO=redis-socketio:6379
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    depends_on:
+      - backend
+      - redis-queue
+    networks:
+      - container_net
+    restart: unless-stopped
+
+  queue-long:
+    image: erpnext-custom-woo:latest
+    container_name: erpnext-queue-long
+    command: ["bench", "worker", "--queue", "long"]
+    environment:
+      - FRAPPE_SITE_NAME=${FRAPPE_SITE_NAME:-erpnext.local}
+      - REDIS_CACHE=redis-cache:6379
+      - REDIS_QUEUE=redis-queue:6379
+      - REDIS_SOCKETIO=redis-socketio:6379
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    depends_on:
+      - backend
+      - redis-queue
+    networks:
+      - container_net
+    restart: unless-stopped
+
+  scheduler:
+    image: erpnext-custom-woo:latest
+    container_name: erpnext-scheduler
+    command: ["bench", "schedule"]
+    environment:
+      - FRAPPE_SITE_NAME=${FRAPPE_SITE_NAME:-erpnext.local}
+      - REDIS_CACHE=redis-cache:6379
+      - REDIS_QUEUE=redis-queue:6379
+      - REDIS_SOCKETIO=redis-socketio:6379
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    depends_on:
+      - backend
+      - redis-queue
+    networks:
+      - container_net
+    restart: unless-stopped
+
+volumes:
+  db-data:
+    driver: local
+  redis-cache-data:
+    driver: local
+  redis-queue-data:
+    driver: local
+  redis-socketio-data:
+    driver: local
+  sites:
+    driver: local
+  logs:
+    driver: local
+
+networks:
+  container_net:
+    driver: bridge

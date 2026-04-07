@@ -1,0 +1,197 @@
+Esse erro final acontece porque, mesmo rodando o comando com
+./env/bin/python, o pip tenta criar um ambiente isolado (o que chamamos de PEP 517) e falha ao não encontrar o próprio pip ou o flit_core dentro desse novo ambiente temporário.
+Para resolver de vez e garantir que você consiga reproduzir isso em qualquer máquina, aqui está o passo a passo técnico definitivo.
+1. O Comando "Mágico" que resolve o erro de Build
+Dentro da pasta frappe-bench, execute o comando com as variáveis de ambiente que desativam o isolamento e forçam o uso do backend de build do setuptools:
+bash
+
+# Força o pip a não isolar o build e ignora erros de backend incompleto
+PIP_USE_PEP517=0 ./env/bin/python -m pip install --no-build-isolation -e apps/woocommerceconnector
+
+Use o código com cuidado.
+2. Passo a Passo Completo para Nova Máquina (Markdown)
+Copie o conteúdo abaixo e salve como setup_erpnext_woocommerce.md. Este guia cobre desde o Docker até a finalização sem erros.
+🚀 Guia Definitivo: ERPNext + WooCommerce Connector no Docker
+Este guia resolve os erros de pip not found, flit_core missing e build backend error.
+Passo 1: Preparar o Ambiente Docker
+Use um docker-compose.yml padrão do Frappe v15. Após subir os containers, acesse o terminal do container backend:
+bash
+
+docker exec -u frappe -it [NOME_DO_CONTAINER] /bin/bash
+cd /home/frappe/frappe-bench
+
+Use o código com cuidado.
+Passo 2: Corrigir o Ambiente Virtual (Obrigatório)
+Antes de instalar qualquer app customizado, injete as dependências de build no env:
+bash
+
+./env/bin/python -m pip install --upgrade pip
+./env/bin/python -m pip install flit_core setuptools wheel
+
+Use o código com cuidado.
+Passo 3: Baixar e Instalar os Apps
+Se o bench get-app falhar no meio, não se preocupe. O importante é o código estar na pasta apps/.
+bash
+
+# 1. Baixar o código
+bench get-app https://github.com
+
+# 2. Instalação Forçada (Resolve o erro de "Getting requirements to build editable")
+PIP_USE_PEP517=0 ./env/bin/python -m pip install --no-build-isolation -e apps/woocommerceconnector
+
+# 3. Vincular ao ERPNext (Caso ele tenha sumido)
+PIP_USE_PEP517=0 ./env/bin/python -m pip install --no-build-isolation -e apps/erpnext
+
+Use o código com cuidado.
+Passo 4: Registrar e Ativar
+Garanta que os apps estão no arquivo de registro para o Frappe carregá-los:
+bash
+
+# Ajustar a lista de presença
+echo -e "frappe\nerpnext\nwoocommerceconnector" > sites/apps.txt
+
+# Instalar no site e migrar
+bench --site [seu-site] install-app erpnext
+bench --site [seu-site] install-app woocommerceconnector
+bench --site [seu-site] migrate
+bench build --app woocommerceconnector
+
+Use o código com cuidado.
+Por que isso funciona?
+
+    PIP_USE_PEP517=0: Obriga o instalador a usar o modo legado, que não tenta criar um container virtual dentro do seu container para compilar o app.
+    --no-build-isolation: Permite que o script de instalação do WooCommerce Connector enxergue o pip e o flit_core que você instalou manualmente no Passo 2.
+
+Dica: Se for automatizar no Dockerfile, adicione a linha RUN ./env/bin/python -m pip install flit_core setuptools wheel logo após a criação do bench.
+Deseja que eu ajude a montar um Dockerfile customizado que já inclua essas correções automaticamente no build da imagem?
+sim!!!
+Para automatizar tudo e evitar que você tenha que rodar esses comandos manualmente toda vez que subir um novo ambiente, o ideal é criar uma
+Custom Image.
+Abaixo está o Dockerfile e o docker-compose.yml ajustados. Salve-os na mesma pasta.
+1. O Arquivo Dockerfile
+Este arquivo estende a imagem oficial e já injeta as correções de build e os apps.
+dockerfile
+
+# Usa a imagem oficial do ERPNext v15 como base
+FROM frappe/erpnext:v15.10.0
+
+USER frappe
+
+# 1. Preparar o ambiente virtual com as dependências de build que faltam
+RUN ./env/bin/python -m pip install --upgrade pip \
+    && ./env/bin/python -m pip install flit_core setuptools wheel
+
+# 2. Baixar os apps (WooCommerce Connector)
+# O ERPNext já vem na imagem, mas o conector precisa ser baixado
+RUN bench get-app --skip-assets https://github.com
+
+# 3. Instalação FORÇADA para evitar o erro de build backend/pip not found
+# Usamos as flags que descobrimos para ignorar o isolamento de build
+RUN PIP_USE_PEP517=0 ./env/bin/python -m pip install --no-build-isolation -e apps/woocommerceconnector
+
+# 4. Garantir que os apps estejam registrados no arquivo de sistema
+RUN echo "frappe" > sites/apps.txt \
+    && echo "erpnext" >> sites/apps.txt \
+    && echo "woocommerceconnector" >> sites/apps.txt
+
+Use o código com cuidado.
+2. O Arquivo docker-compose.yml
+Agora, em vez de baixar a imagem pronta, o Docker vai construir a sua imagem com os apps inclusos.
+yaml
+
+version: '3'
+
+services:
+  db:
+    image: mariadb:10.6
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+    environment:
+      - MYSQL_ROOT_PASSWORD=admin
+    volumes:
+      - db-data:/var/lib/mysql
+
+  redis-cache:
+    image: redis:6.2-alpine
+
+  # Este é o container principal que usa o seu Dockerfile
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: erpnext-custom-woo:latest
+    environment:
+      - DB_HOST=db
+      - REDIS_CACHE=redis-cache:6379
+    volumes:
+      - sites-data:/home/frappe/frappe-bench/sites
+    depends_on:
+      - db
+      - redis-cache
+
+volumes:
+  db-data:
+  sites-data:
+
+Use o código com cuidado.
+3. Como subir na máquina nova (Passo a Passo)
+
+    Coloque o Dockerfile e o docker-compose.yml na mesma pasta.
+    Suba os serviços (isso vai demorar um pouco na primeira vez pois ele vai compilar os apps):
+    bash
+
+    docker-compose up -d
+
+    Use o código com cuidado.
+    Crie o seu site (apenas na primeira vez):
+    bash
+
+    docker exec -u frappe -it [ID_DO_CONTAINER_BACKEND] bench new-site erpnext.local --admin-password admin --mariadb-root-password admin --no-mariadb-socket
+
+    Use o código com cuidado.
+    Instale os apps no site:
+    bash
+
+    docker exec -u frappe -it [ID_DO_CONTAINER_BACKEND] bench --site erpnext.local install-app erpnext
+    docker exec -u frappe -it [ID_DO_CONTAINER_BACKEND] bench --site erpnext.local install-app woocommerceconnector
+
+    Use o código com cuidado.
+
+📝 Resumo do que resolvemos:
+
+    No Dockerfile: Adicionamos flit_core e wheel logo no início.
+    Instalação: Usamos PIP_USE_PEP517=0 e --no-build-isolation para que o setup.py do WooCommerce consiga importar o pip do ambiente global sem travar o build.
+    Persistência: O arquivo sites/apps.txt já nasce configurado na imagem.
+
+Deseja que eu gere o link para você baixar esse guia em formato PDF ou Markdown consolidado?
+
+
+
+
+
+
+
+
+    SEUQUENCIA DE INSTALAÇÃO DO Connector
+
+
+    ./env/bin/python -m pip install --upgrade pip
+./env/bin/python -m pip install flit_core setuptools wheel
+
+
+
+    bench get-app --skip-assets https://github.com/drzewkopl/woocommerceconnector.git
+
+
+    # 1. Baixar o código
+bench get-app https://github.com
+
+# 2. Instalação Forçada (Resolve o erro de "Getting requirements to build editable")
+PIP_USE_PEP517=0 ./env/bin/python -m pip install --no-build-isolation -e apps/woocommerceconnector
+
+# 3. Vincular ao ERPNext (Caso ele tenha sumido)
+PIP_USE_PEP517=0 ./env/bin/python -m pip install --no-build-isolation -e apps/erpnext
+
+Use o código com cuidado.

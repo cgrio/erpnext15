@@ -1,0 +1,32 @@
+# Cloudflare Tunnel Configuration Example
+# Coloque este arquivo em ~/.cloudflared/config.yml no seu servidor
+
+tunnel: seu-tunnel-id-aqui
+credentials-file: /home/usuario/.cloudflared/seu-tunnel-id-aqui.json
+
+ingress:
+  # ERPNext via Portainer (porta 8090)
+  - hostname: seu-dominio.com.br
+    service: http://localhost:8090
+    originRequest:
+      httpHostHeader: seu-dominio.com.br
+      originServerName: seu-dominio.com.br
+      # Headers para Cloudflare
+      headers:
+        add:
+          X-Forwarded-Proto: https
+          X-Forwarded-For: ${CF_CONNECTING_IP}
+          CF-Connecting-IP: ${CF_CONNECTING_IP}
+      # Aumentar timeout para uploads
+      connectTimeout: 30s
+      tlsTimeout: 30s
+      tcpKeepAlive: 30s
+      # Disable TLS verification se auto-signed (não recomendado em produção)
+      noTLSVerify: false
+
+  # Fallback para qualquer outra requisição
+  - service: http_status:404
+
+# Log settings
+logLevel: info
+logFile: /var/log/cloudflared/erpnext.log
